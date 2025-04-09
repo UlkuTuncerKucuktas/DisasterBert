@@ -1,0 +1,94 @@
+import os
+import argparse
+import torch
+import numpy as np
+from transformers import AutoTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from utils.dataset import DisasterDataset
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    
+    accuracy = accuracy_score(labels, predictions)
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, predictions, average='weighted')
+    
+    print(f"\nEvaluation Metrics:")
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1 Score: {f1:.4f}\n")
+    
+    return {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1
+    }
+
+def main():
+    parser = argparse.ArgumentParser(description="Train a BERT model on disaster datasets.")
+    parser.add_argument("--model_name", type=str, default="bert-base-uncased", help="Pretrained model name from HuggingFace Hub")
+    parser.add_argument("--dataset_dir", type=str, required=True, help="Directory containing the dataset splits (train, dev, test)")
+    parser.add_argument("--epochs", type=int, default=5, help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=8, help="Training and evaluation batch size")
+    args = parser.parse_args()
+
+    # Initialize tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+
+    # Construct dataset paths
+    base_name = os.path.basename(os.path.normpath(args.dataset_dir))
+    train_path = os.path.join(args.dataset_dir, f"{base_name}_train.tsv")
+    dev_path = os.path.join(args.dataset_dir, f"{base_name}_dev.tsv")
+    test_path = os.path.join(args.dataset_dir, f"{base_name}_test.tsv")
+
+    # Load train dataset first to create label encoder
+    train_dataset = DisasterDataset(data_path=train_path, tokenizer=tokenizer, max_len=128)
+    
+    # Load dev and test datasets using the same label encoder
+    dev_dataset = DisasterDataset(data_path=dev_path, tokenizer=tokenizer, max_len=128, label_encoder=train_dataset.label_encoder)
+    test_dataset = DisasterDataset(data_path=test_path, tokenizer=tokenizer, max_len=128, label_encoder=train_dataset.label_encoder)
+
+    # Initialize model with correct number of labels
+    model = BertForSequenceClassification.from_pretrained(
+        args.model_name,
+        num_labels=len(train_dataset.label_encoder.classes_)
+    )
+
+    # Configure training arguments
+    training_args = TrainingArguments(
+        output_dir="./results",
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
+        eval_strategy="epoch",
+        disable_tqdm=False
+    )
+
+    # Initialize Trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=dev_dataset,
+        tokenizer=tokenizer,
+        compute_metrics=compute_metrics
+    )
+
+    # Train the model
+    trainer.train()
+
+    # Evaluate on the test set
+    test_results = trainer.evaluate(test_dataset)
+    print("\nFinal Test Metrics:")
+    print(f"Accuracy: {test_results['eval_accuracy']:.4f}")
+    print(f"Precision: {test_results['eval_precision']:.4f}")
+    print(f"Recall: {test_results['eval_recall']:.4f}")
+    print(f"F1 Score: {test_results['eval_f1']:.4f}")
+
+if __name__ == "__main__":
+    main()

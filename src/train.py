@@ -2,9 +2,10 @@ import os
 import argparse
 import torch
 import numpy as np
-from transformers import AutoTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
+from transformers import AutoTokenizer, BertForSequenceClassification, Trainer, TrainingArguments, TrainerCallback
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from utils.dataset import DisasterDataset
+from openpyxl import Workbook
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -12,22 +13,27 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred
     predictions = np.argmax(predictions, axis=1)
-    
     accuracy = accuracy_score(labels, predictions)
     precision, recall, f1, _ = precision_recall_fscore_support(labels, predictions, average='weighted')
-    
     print(f"\nEvaluation Metrics:")
     print(f"Accuracy: {accuracy:.4f}")
     print(f"Precision: {precision:.4f}")
     print(f"Recall: {recall:.4f}")
     print(f"F1 Score: {f1:.4f}\n")
-    
-    return {
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1
-    }
+    return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
+
+class ExcelLoggerCallback(TrainerCallback):
+    def __init__(self, filename):
+        self.filename = filename
+        self.wb = Workbook()
+        self.ws = self.wb.active
+        self.ws.append(["epoch", "global_step", "split", "accuracy", "precision", "recall", "f1"])
+        self.wb.save(self.filename)
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        row = [state.epoch, state.global_step, "test", metrics.get("eval_accuracy", None), metrics.get("eval_precision", None), metrics.get("eval_recall", None), metrics.get("eval_f1", None)]
+        self.ws.append(row)
+        self.wb.save(self.filename)
+        return control
 
 def main():
     parser = argparse.ArgumentParser(description="Train a BERT model on disaster datasets.")
@@ -37,31 +43,18 @@ def main():
     parser.add_argument("--batch_size", type=int, default=8, help="Training and evaluation batch size")
     args = parser.parse_args()
 
-    # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 
-    # Construct dataset paths
     base_name = os.path.basename(os.path.normpath(args.dataset_dir))
     train_path = os.path.join(args.dataset_dir, f"{base_name}_train.tsv")
-    dev_path = os.path.join(args.dataset_dir, f"{base_name}_dev.tsv")
     test_path = os.path.join(args.dataset_dir, f"{base_name}_test.tsv")
 
-    # Load train dataset first to create label encoder
-    train_dataset = DisasterDataset(data_path=train_path, tokenizer=tokenizer, max_len=128)
-    
-    # Load dev and test datasets using the same label encoder
-    dev_dataset = DisasterDataset(data_path=dev_path, tokenizer=tokenizer, max_len=128, label_encoder=train_dataset.label_encoder)
-    test_dataset = DisasterDataset(data_path=test_path, tokenizer=tokenizer, max_len=128, label_encoder=train_dataset.label_encoder)
+    train_dataset = DisasterDataset(data_path=train_path, tokenizer=tokenizer, max_len=128,desc_csv_path="/app/DisasterBert/desc.csv")
+    test_dataset = DisasterDataset(data_path=test_path, tokenizer=tokenizer, max_len=128, label_encoder=train_dataset.label_encoder,desc_csv_path="/app/DisasterBert/desc.csv")
 
-    # Initialize model with correct number of labels
-    model = BertForSequenceClassification.from_pretrained(
-        args.model_name,
-        num_labels=len(train_dataset.label_encoder.classes_)
-    )
+    model = BertForSequenceClassification.from_pretrained(args.model_name, num_labels=len(train_dataset.label_encoder.classes_))
 
-    # Configure training arguments
     training_args = TrainingArguments(
-        output_dir="./results",
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
@@ -69,21 +62,25 @@ def main():
         disable_tqdm=False
     )
 
-    # Initialize Trainer
+    excel_filename = f"{base_name}_{args.model_name.replace('/', '-')}.xlsx"
+    excel_logger = ExcelLoggerCallback(excel_filename)
+
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=dev_dataset,
+        eval_dataset=test_dataset,
         tokenizer=tokenizer,
-        compute_metrics=compute_metrics
+        compute_metrics=compute_metrics,
+        callbacks=[excel_logger]
     )
 
-    # Train the model
     trainer.train()
 
-    # Evaluate on the test set
     test_results = trainer.evaluate(test_dataset)
+    excel_logger.ws.append([trainer.state.epoch, trainer.state.global_step, "test", test_results.get("eval_accuracy", None), test_results.get("eval_precision", None), test_results.get("eval_recall", None), test_results.get("eval_f1", None)])
+    excel_logger.wb.save(excel_filename)
+
     print("\nFinal Test Metrics:")
     print(f"Accuracy: {test_results['eval_accuracy']:.4f}")
     print(f"Precision: {test_results['eval_precision']:.4f}")

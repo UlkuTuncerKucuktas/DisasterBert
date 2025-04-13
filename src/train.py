@@ -37,7 +37,7 @@ class ExcelLoggerCallback(TrainerCallback):
 
 def main():
     parser = argparse.ArgumentParser(description="Train a BERT model on disaster datasets.")
-    parser.add_argument("--model_name", type=str, default="bert-base-uncased", help="Pretrained model name from HuggingFace Hub")
+    parser.add_argument("--model_name", type=str, default="bert-large-uncased", help="Pretrained model name from HuggingFace Hub")
     parser.add_argument("--dataset_dir", type=str, required=True, help="Directory containing the dataset splits (train, dev, test)")
     parser.add_argument("--epochs", type=int, default=5, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=8, help="Training and evaluation batch size")
@@ -49,8 +49,8 @@ def main():
     train_path = os.path.join(args.dataset_dir, f"{base_name}_train.tsv")
     test_path = os.path.join(args.dataset_dir, f"{base_name}_test.tsv")
 
-    train_dataset = DisasterDataset(data_path=train_path, tokenizer=tokenizer, max_len=350,desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=True)
-    test_dataset = DisasterDataset(data_path=test_path, tokenizer=tokenizer, max_len=350, label_encoder=train_dataset.label_encoder,desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=True)
+    train_dataset = DisasterDataset(data_path=train_path, tokenizer=tokenizer, max_len=128,desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=True)
+    test_dataset = DisasterDataset(data_path=test_path, tokenizer=tokenizer, max_len=128, label_encoder=train_dataset.label_encoder,desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=True)
 
     model = BertForSequenceClassification.from_pretrained(args.model_name, num_labels=len(train_dataset.label_encoder.classes_))
 
@@ -60,13 +60,13 @@ def main():
         per_device_eval_batch_size=args.batch_size,
         eval_strategy="epoch",
         disable_tqdm=False,
-        label_smoothing_factor=0.05,
         load_best_model_at_end=True,
         metric_for_best_model="eval_f1",
         greater_is_better=True,
         save_strategy="epoch",
         save_steps=1,
         save_total_limit=1,
+        learning_rate=2e-5,
     )
 
     excel_filename = f"{base_name}_{args.model_name.replace('/', '-')}.xlsx"

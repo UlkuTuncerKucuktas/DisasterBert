@@ -16,7 +16,7 @@ def compute_metrics(eval_pred):
     accuracy = accuracy_score(labels, predictions)
     precision, recall, f1, _ = precision_recall_fscore_support(labels, predictions, average='weighted')
     print(f"\nEvaluation Metrics:")
-    print(f"Accuracy: {accuracy:.4f}")
+    print(f"Accuracy: {accuracy:.4f}") 
     print(f"Precision: {precision:.4f}")
     print(f"Recall: {recall:.4f}")
     print(f"F1 Score: {f1:.4f}\n")
@@ -49,8 +49,8 @@ def main():
     train_path = os.path.join(args.dataset_dir, f"{base_name}_train.tsv")
     test_path = os.path.join(args.dataset_dir, f"{base_name}_test.tsv")
 
-    train_dataset = DisasterDataset(data_path=train_path, tokenizer=tokenizer, max_len=128,desc_csv_path="/app/DisasterBert/desc.csv")
-    test_dataset = DisasterDataset(data_path=test_path, tokenizer=tokenizer, max_len=128, label_encoder=train_dataset.label_encoder,desc_csv_path="/app/DisasterBert/desc.csv")
+    train_dataset = DisasterDataset(data_path=train_path, tokenizer=tokenizer, max_len=350,desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=True)
+    test_dataset = DisasterDataset(data_path=test_path, tokenizer=tokenizer, max_len=350, label_encoder=train_dataset.label_encoder,desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=True)
 
     model = BertForSequenceClassification.from_pretrained(args.model_name, num_labels=len(train_dataset.label_encoder.classes_))
 
@@ -59,7 +59,14 @@ def main():
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
         eval_strategy="epoch",
-        disable_tqdm=False
+        disable_tqdm=False,
+        label_smoothing_factor=0.05,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_f1",
+        greater_is_better=True,
+        save_strategy="epoch",
+        save_steps=1,
+        save_total_limit=1,
     )
 
     excel_filename = f"{base_name}_{args.model_name.replace('/', '-')}.xlsx"

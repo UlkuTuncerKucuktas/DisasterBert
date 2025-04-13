@@ -6,11 +6,26 @@ from sklearn.preprocessing import LabelEncoder
 from datetime import datetime, timezone
 import dateutil.parser
 
+TASK = """Classify this tweet into one of these humanitarian categories:
+
+1. **Caution and advice** - Warnings, safety tips, or official guidance
+2. **Displaced people** - Evacuations, shelters, missing family reports
+3. **Infrastructure damage** - Collapsed buildings, flooded roads, power outages
+4. **Injured/dead** - Casualty reports, injury details, body recovery
+5. **Requests/needs** - Urgent asks for food, medicine, or rescue
+6. **Rescue efforts** - Volunteer activities, donation drives
+7. **Not humanitarian** - Irrelevant tweets, casual conversation
+8. **Other** - Humanitarian but doesn't fit other categories
+
+"""
+
+
 class DisasterDataset(Dataset):
-    def __init__(self, data_path, tokenizer, max_len, label_encoder=None, desc_csv_path=None):
+    def __init__(self, data_path, tokenizer, max_len, label_encoder=None, desc_csv_path=None, prompt_heuristic=False):
         self.data = pd.read_csv(data_path, sep="\t")
         self.tokenizer = tokenizer
         self.max_len = max_len
+        self.prompt_heuristic = prompt_heuristic
         if label_encoder is None:
             self.label_encoder = LabelEncoder()
             self.label_encoder.fit(self.data["class_label"].unique())
@@ -62,9 +77,17 @@ class DisasterDataset(Dataset):
             days_since_event = delta.days
         else:
             days_since_event = "N/A"
-        formatted_text = ("The tweets time since event happened : {} days\n\n"
-                          "Description of the event : {}\n\n"
-                          "The tweet : {}").format(days_since_event, self.event_desc, text)
+
+
+        if self.prompt_heuristic:
+            formatted_text = ("The tweets time since event happened : {} days\n\n"
+                            "Description of the event : {}\n\n"
+                            "The tweet to classify: {}").format(days_since_event, self.event_desc, text)
+
+            formatted_text = TASK + "\n\n" + formatted_text
+        else:
+            formatted_text = text
+
 
         return {
             "input_ids": encoding["input_ids"].squeeze(),
@@ -72,3 +95,4 @@ class DisasterDataset(Dataset):
             "labels": torch.tensor(label),
             "formatted_text": formatted_text
         }
+

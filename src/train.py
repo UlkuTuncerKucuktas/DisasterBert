@@ -4,6 +4,13 @@ import torch
 import numpy as np
 from transformers import AutoTokenizer, BertForSequenceClassification, Trainer, TrainingArguments, TrainerCallback
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from peft import (
+    LoraConfig,
+    PromptTuningConfig,
+    PrefixTuningConfig,
+    AdaLoraConfig,
+    get_peft_model,
+)
 from utils.dataset import DisasterDataset
 from openpyxl import Workbook
 
@@ -41,6 +48,9 @@ def main():
     parser.add_argument("--dataset_dir", type=str, required=True, help="Directory containing the dataset splits (train, dev, test)")
     parser.add_argument("--epochs", type=int, default=5, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=8, help="Training and evaluation batch size")
+    parser.add_argument("--finetune_method", type=str, default="default", 
+                      choices=["default", "lora", "prompt_tuning", "prefix_tuning", "adalora"],
+                      help="Fine-tuning method to use")
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
@@ -49,13 +59,61 @@ def main():
     train_path = os.path.join(args.dataset_dir, f"{base_name}_train.tsv")
     test_path = os.path.join(args.dataset_dir, f"{base_name}_test.tsv")
 
-    train_dataset = DisasterDataset(data_path=train_path, tokenizer=tokenizer, max_len=128,desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=True)
-    test_dataset = DisasterDataset(data_path=test_path, tokenizer=tokenizer, max_len=128, label_encoder=train_dataset.label_encoder,desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=True)
+    if not (args.finetune_method == "prompt_tuning" or args.finetune_method == "prefix_tuning"):
+        train_dataset = DisasterDataset(data_path=train_path, tokenizer=tokenizer, max_len=128, desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=True)
+        test_dataset = DisasterDataset(data_path=test_path, tokenizer=tokenizer, max_len=128, label_encoder=train_dataset.label_encoder, desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=True)
+    else:
+        train_dataset = DisasterDataset(data_path=train_path, tokenizer=tokenizer, max_len=128, desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=False)
+        test_dataset = DisasterDataset(data_path=test_path, tokenizer=tokenizer, max_len=128, label_encoder=train_dataset.label_encoder, desc_csv_path="/app/DisasterBert/desc.csv", prompt_heuristic=False)
 
     model = BertForSequenceClassification.from_pretrained(args.model_name, num_labels=len(train_dataset.label_encoder.classes_))
 
+    # Apply PEFT configurations
+    if args.finetune_method != "default":
+        if args.finetune_method == "lora":
+            peft_config = LoraConfig(
+                r=16,
+                lora_alpha=64,
+                lora_dropout=0.05,
+                bias="none",
+                target_modules=["query","value"],
+                task_type="SEQ_CLS"
+            )
+        elif args.finetune_method == "adalora":
+            peft_config = AdaLoraConfig(
+                init_r=24,
+                target_r=16,
+                tinit=100,
+                tfinal=500,
+                deltaT=10,
+                lora_alpha=32,
+                lora_dropout=0.1,
+                orth_reg_weight=0.5,
+                target_modules=["query","value"],
+                task_type="SEQ_CLS",
+                total_step=2000
+            )
+        elif args.finetune_method == "prompt_tuning":
+            peft_config = PromptTuningConfig(
+                tokenizer_name_or_path=args.model_name,
+                task_type="SEQ_CLS",
+                num_virtual_tokens=100,
+                prompt_tuning_init="TEXT",
+                prompt_tuning_init_text="Classify this tweet into one of the humanitarian categories:",
+                inference_mode=False,
+                token_dim=1024,
+                num_transformer_submodules=1,
+                num_attention_heads=16,
+                num_layers=1
+            )
+        elif args.finetune_method == "prefix_tuning":
+            peft_config = PrefixTuningConfig(task_type="SEQ_CLS", num_virtual_tokens=20, base_model_name_or_path=args.model_name)
+            
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
+
     training_args = TrainingArguments(
-        num_train_epochs=args.epochs,
+        num_train_epochs=3*args.epochs,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
         eval_strategy="epoch",
@@ -66,10 +124,11 @@ def main():
         save_strategy="epoch",
         save_steps=1,
         save_total_limit=1,
-        learning_rate=2e-5,
+        learning_rate=2e-5 if args.finetune_method == "default" else 1e-3,
+        weight_decay=0.01,
     )
 
-    excel_filename = f"{base_name}_{args.model_name.replace('/', '-')}.xlsx"
+    excel_filename = f"{base_name}_{args.model_name.replace('/', '-')}_{args.finetune_method}.xlsx"
     excel_logger = ExcelLoggerCallback(excel_filename)
 
     trainer = Trainer(
